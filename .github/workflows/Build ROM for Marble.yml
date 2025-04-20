@@ -10,7 +10,7 @@ on:
         required: true
         default: 'https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS2.0.5.0.VMRCNXM/marble-ota_full-OS2.0.5.0.VMRCNXM-user-15.0-360119838b.zip'
       IMAGE_TYPE:
-        description: "IMAGE 格式"
+        description: "IMAGE 格式 (erofs/ext4)"
         required: true
         default: 'erofs'
         type: choice
@@ -18,15 +18,15 @@ on:
         - erofs
         - ext4
       EXT_RW:
-        description: 'EXT4 可读写'
+        description: 'EXT4 可读写 (true/false)'
         required: true
         type: boolean
       DECRYPTION:
-        description: '去除强制加密'
+        description: '去除强制加密 (true/false)'
         required: true
         type: boolean
       PERFECTICON:
-        description: '启用完美图标'
+        description: '启用完美图标 (true/false)'
         required: true
         type: boolean
 jobs:
@@ -43,41 +43,96 @@ jobs:
           remove-android: 'true'
           remove-haskell: 'true'
           remove-codeql: 'true'
-      - name: 检出仓库文件
+
+      - name: 检出构建脚本仓库
         uses: actions/checkout@main
         with:
-          repository: Kyuofox/Action_Build_Marble_ROM
-          ref: android15
-          token: ${{ secrets.PRIVATE_TOKEN }}
+          repository: Kyuofox/Action_Build_Marble_ROM # 构建脚本所在的仓库
+          ref: android15                       # 构建脚本所在的分支
+          token: ${{ secrets.PRIVATE_TOKEN }}    # 需要有读取该仓库的权限，如果是公开仓库可省略或使用 GITHUB_TOKEN
+
       - name: 准备所需环境
         run: |
           sudo timedatectl set-timezone Asia/Shanghai
-          sudo apt-get install python3 python3-pip aria2 p7zip-full zstd fuse3
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip aria2 p7zip-full zstd fuse3
+
       - name: 构建 ROM
+        id: build_rom # 给步骤加个id方便引用其输出
         run: |
-          sudo bash "$GITHUB_WORKSPACE"/make.sh ${{ github.event.inputs.URL }} ${{ github.event.inputs.VENDOR_URL }} ${{ github.event.inputs.IMAGE_TYPE }} ${{ github.event.inputs.EXT_RW }} ${{ github.event.inputs.DECRYPTION }} ${{ github.event.inputs.PERFECTICON }} $GITHUB_ENV $GITHUB_WORKSPACE
-      - name: 处理 ROM
+          echo "开始执行构建脚本 make.sh..."
+          # 将输入参数传递给 make.sh
+          # make.sh 预期会执行实际的构建，并设置环境变量（如 rom_name, port_os_version 等）到 $GITHUB_ENV
+          sudo bash "$GITHUB_WORKSPACE"/make.sh \
+            "${{ github.event.inputs.URL }}" \
+            "${{ github.event.inputs.VENDOR_URL }}" \
+            "${{ github.event.inputs.IMAGE_TYPE }}" \
+            "${{ github.event.inputs.EXT_RW }}" \
+            "${{ github.event.inputs.DECRYPTION }}" \
+            "${{ github.event.inputs.PERFECTICON }}" \
+            "$GITHUB_ENV" \
+            "$GITHUB_WORKSPACE"
+        # 检查 make.sh 是否成功执行 (GitHub Actions 默认会检查退出码，这里是显式提醒)
+        continue-on-error: false
+
+      - name: 检查构建结果并处理 ROM
         run: |
+          echo "检查构建脚本设置的环境变量..."
+          # 检查 make.sh 是否成功设置了必要的环境变量
+          if [ -z "${{ env.rom_name }}" ]; then
+            echo "::error::构建脚本未设置 rom_name 环境变量！"
+            exit 1
+          fi
+          if [ -z "${{ env.port_os_version }}" ]; then
+            echo "::error::构建脚本未设置 port_os_version 环境变量！"
+            exit 1
+          fi
+          # 可以添加更多变量检查...
+
+          ROM_ZIP_PATH="$GITHUB_WORKSPACE/zip/${{ env.rom_name }}"
+          echo "检查 ROM 文件是否存在: ${ROM_ZIP_PATH}"
+          if [ ! -f "${ROM_ZIP_PATH}" ]; then
+            echo "::error::构建后的 ROM zip 文件未在预期路径找到！"
+            exit 1
+          fi
+
+          echo "创建 GithubRelease 目录并分割文件..."
           mkdir -p "$GITHUB_WORKSPACE"/GithubRelease
           cd "$GITHUB_WORKSPACE"/GithubRelease
-          sudo split -b 1536M -d "$GITHUB_WORKSPACE"/zip/${{ env.rom_name }} ${{ env.rom_name }}
+          # 分割文件以适应 GitHub Release 的大小限制 (单文件 < 2GB)
+          sudo split -b 1536M -d "${ROM_ZIP_PATH}" ${{ env.rom_name }}.
+          echo "文件分割完成。"
+
           cd "$GITHUB_WORKSPACE"
+          echo "创建 Release 描述文件 file.log..."
           touch file.log
+          # 生成 Release body 内容，确保相关环境变量已由 make.sh 设置
           echo -e "移植机型: ${{ env.model }}\n\n底包版本: ${{ env.vendor_os_version }}\n底包安全补丁版本: ${{ env.vendor_security_patch }}\n底包基线版本: ${{ env.origin_base_line}}\n底包vendor基线版本: ${{ env.vendor_base_line}}\n\n移植包版本: ${{ env.port_os_version }}\n移植包安全补丁版本: ${{ env.port_security_patch }}\n移植包基线版本: ${{ env.port_base_line }}" > file.log
+          echo "file.log 创建完成。"
+
       - name: 上传到 Github Release
         uses: ncipollo/release-action@main
         with:
-          artifacts: ${{ github.workspace }}/GithubRelease/*
-          name: ${{ env.port_os_version }}
-          tag: ${{ env.port_os_version }}
-          bodyFile: "${{ github.workspace }}/file.log"
-          allowUpdates: true
+          artifacts: ${{ github.workspace }}/GithubRelease/* # 上传分割后的所有文件
+          name: ${{ env.port_os_version }}                   # Release 名称 (来自环境变量)
+          tag: ${{ env.port_os_version }}                    # Release 标签 (来自环境变量)
+          bodyFile: "${{ github.workspace }}/file.log"       # Release 描述 (来自文件)
+          allowUpdates: true                                # 允许覆盖同名 Tag 的 Release
           artifactErrorsFailBuild: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}               # 使用内置的 GITHUB_TOKEN 进行认证
+
       - name: 上传到 OneDrive
         run: |
+          echo "准备上传到 OneDrive..."
+          # 安装 rclone
           sudo -v ; curl https://rclone.org/install.sh | sudo bash
+          # 配置 rclone (从 Secret 读取配置)
           mkdir -p ~/.config/rclone/
-          echo ${{ secrets.RCLONE_CONFIG }} > base64.txt
-          base64 --decode base64.txt > ~/.config/rclone/rclone.conf
-          rclone copy -P "$GITHUB_WORKSPACE"/zip/${{ env.rom_name }} odrive:/HyperOS-Porting
+          echo "${{ secrets.RCLONE_CONFIG }}" > base64.txt
+          base64 --decode base64.txt > ~/.config/rclone/rclone.conf || { echo "::error::无法解码 RCLONE_CONFIG Secret！请确保它是有效的 Base64 编码。"; exit 1; }
+          rm base64.txt # 删除临时文件
+          # 执行上传 (上传原始的、未分割的文件)
+          echo "开始上传原始 ROM Zip 到 OneDrive..."
+          rclone copy -P "$GITHUB_WORKSPACE"/zip/${{ env.rom_name }} odrive:/HyperOS-Porting --log-level INFO
+          echo "OneDrive 上传完成。"
+
