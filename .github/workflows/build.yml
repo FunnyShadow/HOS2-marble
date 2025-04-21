@@ -1,16 +1,21 @@
-name: Build ROM for Marble (Forked)
+name: Build or Convert ROM for Marble
 on:
   workflow_dispatch:
     inputs:
-      URL:
-        description: "移植包下载地址"
+      CONVERT_ONLY:
+        description: '只转换底包为 EXT4? (设置为 true 时, 将忽略 URL 和 IMAGE_TYPE, 强制输出 EXT4)'
         required: true
+        type: boolean
+        default: false
+      URL:
+        description: "移植包下载地址 (仅在 CONVERT_ONLY=false 时需要)"
+        required: false # No longer required if only converting
       VENDOR_URL:
-        description: "底包下载地址"
+        description: "底包下载地址 (转换或移植都需要)"
         required: true
         default: 'https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS2.0.5.0.VMRCNXM/marble-ota_full-OS2.0.5.0.VMRCNXM-user-15.0-360119838b.zip'
       IMAGE_TYPE:
-        description: "IMAGE 格式"
+        description: "IMAGE 格式 (仅在 CONVERT_ONLY=false 时生效)"
         required: true
         default: 'erofs'
         type: choice
@@ -18,7 +23,7 @@ on:
         - erofs
         - ext4
       EXT_RW:
-        description: 'EXT4 可读写'
+        description: 'EXT4 可读写 (CONVERT_ONLY=true 或 IMAGE_TYPE=ext4 时生效)'
         required: true
         type: boolean
       DECRYPTION:
@@ -26,7 +31,7 @@ on:
         required: true
         type: boolean
       PERFECTICON:
-        description: '启用完美图标'
+        description: '启用完美图标 (仅在 CONVERT_ONLY=false 时生效)'
         required: true
         type: boolean
 jobs:
@@ -47,9 +52,9 @@ jobs:
       - name: 检出构建脚本仓库 (Forked)
         uses: actions/checkout@main
         with:
-          repository: FunnyShadow/HOS2-marble   # 修改这里指向你的 fork 仓库
-          ref: android15                       # 确保你的 fork 中有这个分支
-          token: ${{ secrets.PRIVATE_TOKEN }}    # 这个 token 需要有读取你 fork 仓库的权限
+          repository: FunnyShadow/HOS2-marble
+          ref: android15 # Or your desired branch
+          token: ${{ secrets.PRIVATE_TOKEN }}
 
       - name: 准备所需环境
         run: |
@@ -57,10 +62,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3 python3-pip aria2 p7zip-full zstd fuse3
 
-      - name: 构建 ROM
+      - name: 构建或转换 ROM
         id: build_rom
         run: |
-          # 这个 make.sh 现在来自于你的 FunnyShadow/HOS2-marble 仓库
+          echo "Starting make.sh with CONVERT_ONLY=${{ github.event.inputs.CONVERT_ONLY }}"
+          # Pass CONVERT_ONLY as an additional argument to the script
+          # IMPORTANT: make.sh in FunnyShadow/HOS2-marble MUST be updated to handle this argument
           sudo bash "$GITHUB_WORKSPACE"/make.sh \
             "${{ github.event.inputs.URL }}" \
             "${{ github.event.inputs.VENDOR_URL }}" \
@@ -68,23 +75,26 @@ jobs:
             "${{ github.event.inputs.EXT_RW }}" \
             "${{ github.event.inputs.DECRYPTION }}" \
             "${{ github.event.inputs.PERFECTICON }}" \
+            "${{ github.event.inputs.CONVERT_ONLY }}" \
             "$GITHUB_ENV" \
             "$GITHUB_WORKSPACE"
         continue-on-error: false
 
-      - name: 检查构建结果并处理 ROM
+      - name: 检查构建/转换结果并处理 ROM
         run: |
+          # These checks remain the same, relying on make.sh setting the env vars correctly in both modes
           if [ -z "${{ env.rom_name }}" ]; then
-            echo "::error::构建脚本未设置 rom_name 环境变量！"
+            echo "::error::构建/转换脚本未设置 rom_name 环境变量！"
             exit 1
           fi
           if [ -z "${{ env.port_os_version }}" ]; then
-            echo "::error::构建脚本未设置 port_os_version 环境变量！"
+            # Note: In CONVERT_ONLY mode, port_os_version should be set by the script (e.g., VendorVersion-EXT4)
+            echo "::error::构建/转换脚本未设置 port_os_version 环境变量！"
             exit 1
           fi
           ROM_ZIP_PATH="$GITHUB_WORKSPACE/zip/${{ env.rom_name }}"
           if [ ! -f "${ROM_ZIP_PATH}" ]; then
-            echo "::error::构建后的 ROM zip 文件未在预期路径找到！"
+            echo "::error::构建/转换后的 ROM zip 文件未在预期路径找到！"
             exit 1
           fi
           mkdir -p "$GITHUB_WORKSPACE"/GithubRelease
@@ -92,15 +102,18 @@ jobs:
           sudo split -b 1536M -d "${ROM_ZIP_PATH}" ${{ env.rom_name }}.
           cd "$GITHUB_WORKSPACE"
           touch file.log
-          echo -e "移植机型: ${{ env.model }}\n\n底包版本: ${{ env.vendor_os_version }}\n底包安全补丁版本: ${{ env.vendor_security_patch }}\n底包基线版本: ${{ env.origin_base_line}}\n底包vendor基线版本: ${{ env.vendor_base_line}}\n\n移植包版本: ${{ env.port_os_version }}\n移植包安全补丁版本: ${{ env.port_security_patch }}\n移植包基线版本: ${{ env.port_base_line }}" > file.log
+          # This assumes make.sh populates these env vars correctly even in CONVERT_ONLY mode
+          # For CONVERT_ONLY, port_* vars might be N/A or derived from vendor info by the script
+          echo -e "模式: ${{ github.event.inputs.CONVERT_ONLY && '仅转换EXT4' || '移植ROM' }}\n移植机型: ${{ env.model }}\n\n底包版本: ${{ env.vendor_os_version }}\n底包安全补丁版本: ${{ env.vendor_security_patch }}\n底包基线版本: ${{ env.origin_base_line}}\n底包vendor基线版本: ${{ env.vendor_base_line}}\n\n移植包版本: ${{ env.port_os_version }}\n移植包安全补丁版本: ${{ env.port_security_patch }}\n移植包基线版本: ${{ env.port_base_line }}" > file.log
 
       - name: 上传到 Github Release
         uses: ncipollo/release-action@main
         with:
           artifacts: ${{ github.workspace }}/GithubRelease/*
+          # Release name/tag still uses port_os_version, assuming make.sh sets it meaningfully
           name: ${{ env.port_os_version }}
           tag: ${{ env.port_os_version }}
           bodyFile: "${{ github.workspace }}/file.log"
           allowUpdates: true
           artifactErrorsFailBuild: true
-          token: ${{ secrets.GITHUB_TOKEN }} # 使用内置 Token 上传 Release 到你存放 Workflow 的仓库
+          token: ${{ secrets.GITHUB_TOKEN }}
