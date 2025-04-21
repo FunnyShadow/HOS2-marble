@@ -1,4 +1,4 @@
-name: Build ROM for Marble
+name: Build ROM for Marble (Forked)
 on:
   workflow_dispatch:
     inputs:
@@ -44,12 +44,12 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      - name: 检出构建脚本仓库
+      - name: 检出构建脚本仓库 (Forked)
         uses: actions/checkout@main
         with:
-          repository: Kyuofox/Action_Build_Marble_ROM
-          ref: android15
-          token: ${{ secrets.PRIVATE_TOKEN }}
+          repository: FunnyShadow/HOS2-marble   # 修改这里指向你的 fork 仓库
+          ref: android15                       # 确保你的 fork 中有这个分支
+          token: ${{ secrets.PRIVATE_TOKEN }}    # 这个 token 需要有读取你 fork 仓库的权限
 
       - name: 准备所需环境
         run: |
@@ -60,6 +60,7 @@ jobs:
       - name: 构建 ROM
         id: build_rom
         run: |
+          # 这个 make.sh 现在来自于你的 FunnyShadow/HOS2-marble 仓库
           sudo bash "$GITHUB_WORKSPACE"/make.sh \
             "${{ github.event.inputs.URL }}" \
             "${{ github.event.inputs.VENDOR_URL }}" \
@@ -102,4 +103,4 @@ jobs:
           bodyFile: "${{ github.workspace }}/file.log"
           allowUpdates: true
           artifactErrorsFailBuild: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }} # 使用内置 Token 上传 Release 到你存放 Workflow 的仓库
